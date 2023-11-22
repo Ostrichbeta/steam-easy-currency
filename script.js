@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name              Steam Easy Currency
 // @namespace         https://github.com/Ostrichbeta/steam-easy-currency
-// @version           0.95.0
+// @version           0.95.2
 // @description       Show your local currency on the price tag while you are abroad.
 // @author            Ostrichbeta Chan
 // @license           MIT License
@@ -18,6 +18,7 @@
 // @grant             GM_addStyle
 // @grant             GM_getValue
 // @grant             GM_setValue
+// @grant             GM_deleteValue
 // @run-at            document-end
 // ==/UserScript==
 
@@ -42,10 +43,24 @@
         });
     }
 
+    function engineeringNotation(num, digits) {
+        let notations = {Q: 1e30, R: 1e27, Y: 1e24, Z: 1e21, 
+                        E: 1e18, P: 1e15, T: 1e12, G: 1e9,
+                        M: 1e6, k: 1e3
+                        };
+        for (const key in notations) {
+            if (num / notations[key] > 1) {
+                let intlen = Math.floor(Math.log10(num / notations[key]));
+                return (num / notations[key]).toFixed(digits - intlen).toString() + key;
+            }
+        }
+        return num.toString();
+    }
+
     function appendPrice(priceObjList, currencyJSON, appendBr) {
         for (let i = 0; i < priceObjList.length; i++) {
             var item = priceObjList[i];
-            if (! $(item).text().replaceAll(/\s/g,'').match(/[\d,]+\.\d+/)) {
+            if (! $(item).text().replaceAll(/\s/g,'').match(/[\d,]+(?:\.\d+)?/)) {
                 // When there are no price tags, e.g. free contents.
                 continue;
             }
@@ -63,18 +78,25 @@
                 continue;
             }
 
-            var currentPrice = parseFloat($(item).text().replaceAll(/\s/g,'').match(/[\d,]+\.\d+/)[0]);
+            var currentPrice = parseFloat($(item).text().replaceAll(/\s/g,'').replaceAll(/,/g, '').match(/[\d,]+(?:\.\d+)?/)[0]);
             
             var preferCurrency = GM_getValue("sec-currency", "USD");
-            if (!(currencyJSON['rates']).hasOwnProperty(preferCurrency)) {
-                alert("Invalid currency mark " + preferCurrency + ".");
-                break;
+            let priceTag = currencyJSON["source"];
+            if (preferCurrency == priceTag) {
+                var convertRate = 1;
+                return
+            } else {
+                if (!(currencyJSON['quotes']).hasOwnProperty(priceTag + preferCurrency)) {
+                    alert("Invalid currency mark " + preferCurrency + ".");
+                    break;
+                }
+                
+                var convertRate = currencyJSON['quotes'][priceTag + preferCurrency];
             }
             
-            var convertRate = currencyJSON['rates'][preferCurrency];
             let hideOriginalPrice = GM_getValue("sec-hide-original", "0");
             if (hideOriginalPrice == "0") {
-                $(item).append(" " + "(" + (convertRate * currentPrice).toFixed(2) + "&nbsp;" + preferCurrency + ")");
+                $(item).append(" " + "(" + ((convertRate * currentPrice > 1e5) ? engineeringNotation(convertRate * currentPrice, 4) : (convertRate * currentPrice).toFixed(2).toString()) + "&nbsp;" + preferCurrency + ")");
             } else {
                 $(item).text("");
                 $(item).append((convertRate * currentPrice).toFixed(2) + " " + preferCurrency);
@@ -98,6 +120,9 @@
         var dlcPriceList = $(".game_area_dlc_price")
         appendPrice(dlcPriceList, currencyJSON, false);
 
+        var salesPrice = $(".salepreviewwidgets_StoreSalePriceBox_Wh0L8")
+        appendPrice(salesPrice, currencyJSON, false);
+
         var searchSubtitle = $(".match_subtitle").filter(function () {
             return ($(this).parent().hasClass("match_app"));
         })
@@ -114,40 +139,108 @@
             }
             const priceTag = $(priceObj[0]).attr("content");
             console.log("Your currency in Steam is " + priceTag + ".");
-            const currencyJSON = await makeGetRequest("https://api.exchangerate.host/latest?base=" + priceTag, true);
+            if (GM_getValue("sec-currency-apikey") == undefined && GM_getValue("sec-no-key-provided") == undefined) {
+                alert("You haven't set the API key to get currencies. Please visit https://currencylayer.com/ to get one. This alert will not shown again.");
+                GM_setValue("sec-no-key-provided", true);
+            }
+
+            let currencyJSON = {};
+            let refreshCurrency = false;
+
+            // Check cached data to reduce API call
+            try{
+                if (GM_getValue("sec-currency-json-cache") != undefined){
+                    let cachedOBJ = JSON.parse(GM_getValue("sec-currency-json-cache"));
+                    if (Math.floor(new Date().getTime() / 1000) - cachedOBJ['timestamp'] < 28800 && cachedOBJ["source"] == priceTag) {
+                        // Cache the currency data for 8 hours
+                        currencyJSON = cachedOBJ;
+                    } else {
+                        refreshCurrency = true;
+                    }
+                } else {
+                    refreshCurrency = true;
+                }
+            } catch (error) {
+                console.error(error);
+                refreshCurrency = true;
+            }
+
+            if (refreshCurrency) {
+                currencyJSON = await makeGetRequest("http://api.currencylayer.com/live?access_key=" + GM_getValue("sec-currency-apikey", "") + "&source=" + priceTag, true);
+                GM_setValue("sec-currency-json-cache", JSON.stringify(currencyJSON));
+                console.log("Currency data refeshed.");
+            }
+
             
+            if (!currencyJSON["success"]) {
+                try {
+                    let error_type = currencyJSON["error"]["type"];
+                    if (error_type == "invalid_access_key") {
+                        alert("Invalid API key provided. Please get a new one from https://currencylayer.com/.");
+                        GM_deleteValue("sec-currency-apikey");
+                        location.reload();
+                    }
+                } catch (error) {
+                    console.error(error);
+                }
+            }
             
+
             $(".sec-options").click(function (e) { 
                 e.preventDefault();
-                let currency = prompt("Step 1: Enter new currency: ", GM_getValue("sec-currency", "USD"));
-                let settingChanged = false;
-                if (currency != null) {
-                    if (!Object.keys(currencyJSON['rates']).includes(currency)) {
-                        alert("Invalid currency tag, avaliable input is " + Object.keys(currencyJSON['rates']).join(", ") + ".");
+
+                if (GM_getValue("sec-currency-apikey") == undefined) {
+                    let apiKey = prompt("Input your API key, you can get a free one from https://currencylayer.com/");
+                    if (apiKey == "") {
+                        alert("Invalid input.");
+                        return;
                     } else {
-                        GM_setValue("sec-currency", currency);
+                        GM_setValue("sec-currency-apikey", apiKey);
+                        location.reload();
+                    }
+                } else {
+                    let currency = prompt("Step 1: Enter new currency: ", GM_getValue("sec-currency", "USD"));
+                    let settingChanged = false;
+                    let currencyQuotes = Object.keys(currencyJSON['quotes']);
+                    currencyQuotes.forEach((element, index, thisarray) => {
+                        thisarray[index] = element.replace(priceTag, "");
+                    });
+                    currencyQuotes.push(priceTag);
+                    if (currency != null) {
+                        if (!currencyQuotes.includes(currency)) {
+                            alert("Invalid currency tag, avaliable input is " + currencyQuotes.join(", ") + ".");
+                        } else {
+                            GM_setValue("sec-currency", currency);
+                            settingChanged = true;
+                        }
+                    }
+                    let hideOriginalPrice = prompt("Step 2: Hide the original price or not? Input 1 to agree.", GM_getValue("sec-hide-original", "0"));
+                    if (hideOriginalPrice != null) {
+                        switch (hideOriginalPrice) {
+                            case "1":
+                                //hide
+
+                            case "0":
+                                GM_setValue("sec-hide-original", hideOriginalPrice);
+                                settingChanged = true;
+                                //show
+                                break
+                        
+                            default:
+                                alert("Invalid input.");
+                                break;
+                        }
+                    }
+                    let apiKey = prompt("Step 3: Modify your API key if needed, for more details, check https://currencylayer.com/.", GM_getValue("sec-currency-apikey", ""));
+                    if (apiKey == "") {
+                        alert("Invalid input.");
+                    } else if (apiKey != null) {
+                        GM_setValue("sec-currency-apikey", apiKey);
                         settingChanged = true;
                     }
-                }
-                let hideOriginalPrice = prompt("Step 2: Hide the original price or not? Input 1 to agree.", GM_getValue("sec-hide-original", "0"));
-                if (hideOriginalPrice != null) {
-                    switch (hideOriginalPrice) {
-                        case "1":
-                            //hide
-
-                        case "0":
-                            GM_setValue("sec-hide-original", hideOriginalPrice);
-                            settingChanged = true;
-                            //show
-                            break
-                    
-                        default:
-                            alert("Invalid input.");
-                            break;
+                    if (settingChanged) {
+                        location.reload();
                     }
-                }
-                if (settingChanged) {
-                    location.reload();
                 }
             });
             
@@ -158,8 +251,10 @@
         }
     }
 
-    $("div.popup_menu").append("<a class=\"popup_menu_item sec-options\"  href=\"#\"> SEC OPTIONS </a>");
-    $("div.minor_menu_items").append("<a class=\"menuitem sec-options\" href=\"#\"> SEC OPTIONS </a>");
+    const sec_options_caption = GM_getValue("sec-currency-apikey") == undefined ? "SET SEC API KEY" : "SEC OPTIONS";
+
+    $("div.popup_menu").append("<a class=\"popup_menu_item sec-options\"  href=\"#\"> " + sec_options_caption + " </a>");
+    $("div.minor_menu_items").append("<a class=\"menuitem sec-options\" href=\"#\"> " + sec_options_caption + " </a>");
     const currencyJSON = await initData();
     if (currencyJSON["base"] != GM_getValue("sec-currency", "USD")) {
         setInterval(addCurrencyHint, 500, currencyJSON);
