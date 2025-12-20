@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name              Steam Easy Currency
 // @namespace         https://github.com/Ostrichbeta/steam-easy-currency
-// @version           0.95.2
+// @version           0.96
 // @description       Show your local currency on the price tag while you are abroad.
 // @author            Ostrichbeta Chan
 // @license           MIT License
@@ -11,7 +11,7 @@
 // @exclude           https://store.steampowered.com/checkout/*
 // @icon              data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @require           https://code.jquery.com/jquery-3.7.1.min.js
-// @connect           api.exchangerate.host
+// @connect           apilayer.net
 // @connect           store.steampowered.com
 // @grant             GM_xmlhttpRequest
 // @grant             GM_getResourceText
@@ -166,7 +166,7 @@
             }
 
             if (refreshCurrency) {
-                currencyJSON = await makeGetRequest("http://api.currencylayer.com/live?access_key=" + GM_getValue("sec-currency-apikey", "") + "&source=" + priceTag, true);
+                currencyJSON = await makeGetRequest("http://apilayer.net/live?access_key=" + GM_getValue("sec-currency-apikey", "") + "&source=" + priceTag, true);
                 GM_setValue("sec-currency-json-cache", JSON.stringify(currencyJSON));
                 console.log("Currency data refeshed.");
             }
