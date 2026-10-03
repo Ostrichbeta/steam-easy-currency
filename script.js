@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name              Steam Easy Currency
 // @namespace         https://github.com/Ostrichbeta/steam-easy-currency
-// @version           0.96
+// @version           0.97
 // @description       Show your local currency on the price tag while you are abroad.
 // @author            Ostrichbeta Chan
 // @license           MIT License
@@ -11,7 +11,7 @@
 // @exclude           https://store.steampowered.com/checkout/*
 // @icon              data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @require           https://code.jquery.com/jquery-3.7.1.min.js
-// @connect           apilayer.net
+// @connect           api.apilayer.com
 // @connect           store.steampowered.com
 // @grant             GM_xmlhttpRequest
 // @grant             GM_getResourceText
@@ -24,16 +24,21 @@
 
 (async function() {
 
-    function makeGetRequest(url, returnJSON) {
+    function makeGetRequest(url, returnJSON, headers = {}) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: "GET",
                 url: url,
+                headers: headers,
                 onload: function(response) {
-                    if (returnJSON) {
-                        resolve(JSON.parse(response.responseText));
-                    } else {
-                        resolve(response.responseText);
+                    try {
+                        if (returnJSON) {
+                            resolve(JSON.parse(response.responseText));
+                        } else {
+                            resolve(response.responseText);
+                        }
+                    } catch (error) {
+                        reject(error);
                     }
                 },
                 onerror: function(error) {
@@ -55,6 +60,23 @@
             }
         }
         return num.toString();
+    }
+
+    function bindApiKeyFallback() {
+        $(".sec-options").on("click.sec-options-fallback", function (e) {
+            e.preventDefault();
+            const savedApiKey = GM_getValue("sec-currency-apikey", "");
+            const apiKey = prompt("Currency data could not be loaded. Check or replace your API key from https://currencylayer.com/", savedApiKey);
+            if (apiKey == null) {
+                return;
+            }
+            if (apiKey.trim() == "") {
+                alert("Invalid input.");
+                return;
+            }
+            GM_setValue("sec-currency-apikey", apiKey.trim());
+            location.reload();
+        });
     }
 
     function appendPrice(priceObjList, currencyJSON, appendBr) {
@@ -120,7 +142,16 @@
         var dlcPriceList = $(".game_area_dlc_price")
         appendPrice(dlcPriceList, currencyJSON, false);
 
+        // Keep the old selector as a fallback, and use Steam's stable widget
+        // class for the current generated markup.
         var salesPrice = $(".salepreviewwidgets_StoreSalePriceBox_Wh0L8")
+        $(".StoreSalePriceWidgetContainer").each(function () {
+            var priceElement = $(this).children().last();
+            while (priceElement.children().length > 0) {
+                priceElement = priceElement.children().last();
+            }
+            salesPrice = salesPrice.add(priceElement);
+        });
         appendPrice(salesPrice, currencyJSON, false);
 
         var searchSubtitle = $(".match_subtitle").filter(function () {
@@ -131,16 +162,21 @@
 
     async function initData() {
         try {
-            const steamWebPage = await makeGetRequest("https://store.steampowered.com/app/304430/INSIDE/", false) // For fetching the priceTag
-            const jqSteamPage = $($.parseHTML(steamWebPage));
-            const priceObj = jqSteamPage.find("meta[itemprop=\"priceCurrency\"]");
+            // Product pages already expose the account currency. Only make a
+            // second Steam request on pages where that metadata is absent.
+            let priceObj = $("meta[itemprop=\"priceCurrency\"]").first();
+            if (priceObj.length < 1) {
+                const steamWebPage = await makeGetRequest("https://store.steampowered.com/app/304430/INSIDE/", false);
+                const jqSteamPage = $($.parseHTML(steamWebPage));
+                priceObj = jqSteamPage.find("meta[itemprop=\"priceCurrency\"]").first();
+            }
             if (priceObj.length < 1) {
                 throw new Error("Could not find the price tag!");
             }
-            const priceTag = $(priceObj[0]).attr("content");
+            const priceTag = priceObj.attr("content");
             console.log("Your currency in Steam is " + priceTag + ".");
             if (GM_getValue("sec-currency-apikey") == undefined && GM_getValue("sec-no-key-provided") == undefined) {
-                alert("You haven't set the API key to get currencies. Please visit https://currencylayer.com/ to get one. This alert will not shown again.");
+                alert("You haven't set the API key to get currencies. Please visit https://currencylayer.com/ to get one. This alert will not be shown again.");
                 GM_setValue("sec-no-key-provided", true);
             }
 
@@ -166,9 +202,11 @@
             }
 
             if (refreshCurrency) {
-                currencyJSON = await makeGetRequest("http://apilayer.net/live?access_key=" + GM_getValue("sec-currency-apikey", "") + "&source=" + priceTag, true);
+                currencyJSON = await makeGetRequest("https://api.apilayer.com/currency_data/live?source=" + encodeURIComponent(priceTag), true, {
+                    apikey: GM_getValue("sec-currency-apikey", "")
+                });
                 GM_setValue("sec-currency-json-cache", JSON.stringify(currencyJSON));
-                console.log("Currency data refeshed.");
+                console.log("Currency data refreshed.");
             }
 
             
@@ -186,16 +224,22 @@
             }
             
 
-            $(".sec-options").click(function (e) { 
+            $(".sec-options").off("click.sec-options-fallback").click(function (e) {
                 e.preventDefault();
 
-                if (GM_getValue("sec-currency-apikey") == undefined) {
-                    let apiKey = prompt("Input your API key, you can get a free one from https://currencylayer.com/");
-                    if (apiKey == "") {
+                if (GM_getValue("sec-currency-apikey") == undefined || !currencyJSON || !currencyJSON['quotes']) {
+                    const savedApiKey = GM_getValue("sec-currency-apikey", "");
+                    const promptText = savedApiKey == ""
+                        ? "Input your API key, you can get a free one from https://currencylayer.com/"
+                        : "Currency data could not be loaded. Check or replace your API key from https://currencylayer.com/";
+                    let apiKey = prompt(promptText, savedApiKey);
+                    if (apiKey == null) {
+                        return;
+                    } else if (apiKey.trim() == "") {
                         alert("Invalid input.");
                         return;
                     } else {
-                        GM_setValue("sec-currency-apikey", apiKey);
+                        GM_setValue("sec-currency-apikey", apiKey.trim());
                         location.reload();
                     }
                 } else {
@@ -253,12 +297,15 @@
 
     const sec_options_caption = GM_getValue("sec-currency-apikey") == undefined ? "SET SEC API KEY" : "SEC OPTIONS";
 
-    $("div.popup_menu").append("<a class=\"popup_menu_item sec-options\"  href=\"#\"> " + sec_options_caption + " </a>");
+    $(".sec-options").remove();
+    $("#account_dropdown > div.popup_menu").first().append("<a class=\"popup_menu_item sec-options\"  href=\"#\"> " + sec_options_caption + " </a>");
     $("div.minor_menu_items").append("<a class=\"menuitem sec-options\" href=\"#\"> " + sec_options_caption + " </a>");
+    bindApiKeyFallback();
     const currencyJSON = await initData();
-    if (currencyJSON["base"] != GM_getValue("sec-currency", "USD")) {
+    if (currencyJSON && currencyJSON["source"] && currencyJSON["quotes"] && currencyJSON["source"] != GM_getValue("sec-currency", "USD")) {
+        addCurrencyHint(currencyJSON);
         setInterval(addCurrencyHint, 500, currencyJSON);
-    } else {
+    } else if (currencyJSON && currencyJSON["source"] == GM_getValue("sec-currency", "USD")) {
         console.log("The currency of your account is the same as the one you wanna display, abort.");
     }
 })();
