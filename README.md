@@ -20,9 +20,11 @@ You can set the display currency by clicking the panel on the top right.
 
 Set your currency and whether to keep the original price or not.
 
+An exchangerate.dev API key is optional. Anonymous access works without setup; a personal free key can be entered in SEC Options for a higher request allowance. API keys are stored only in your userscript manager.
+
 ![](https://raw.githubusercontent.com/Ostrichbeta/steam-easy-currency/main/img/Change2.png)
 
-Avaliable currency is AED, AFN, ALL, AMD, ANG, AOA, ARS, AUD, AWG, AZN, BAM, BBD, BDT, BGN, BHD, BIF, BMD, BND, BOB, BRL, BSD, BTC, BTN, BWP, BYN, BZD, CAD, CDF, CHF, CLF, CLP, CNH, CNY, COP, CRC, CUC, CUP, CVE, CZK, DJF, DKK, DOP, DZD, EGP, ERN, ETB, EUR, FJD, FKP, GBP, GEL, GGP, GHS, GIP, GMD, GNF, GTQ, GYD, HKD, HNL, HRK, HTG, HUF, IDR, ILS, IMP, INR, IQD, IRR, ISK, JEP, JMD, JOD, JPY, KES, KGS, KHR, KMF, KPW, KRW, KWD, KYD, KZT, LAK, LBP, LKR, LRD, LSL, LYD, MAD, MDL, MGA, MKD, MMK, MNT, MOP, MRU, MUR, MVR, MWK, MXN, MYR, MZN, NAD, NGN, NIO, NOK, NPR, NZD, OMR, PAB, PEN, PGK, PHP, PKR, PLN, PYG, QAR, RON, RSD, RUB, RWF, SAR, SBD, SCR, SDG, SEK, SGD, SHP, SLL, SOS, SRD, SSP, STD, STN, SVC, SYP, SZL, THB, TJS, TMT, TND, TOP, TRY, TTD, TWD, TZS, UAH, UGX, USD, UYU, UZS, VES, VND, VUV, WST, XAF, XAG, XAU, XCD, XDR, XOF, XPD, XPF, XPT, YER, ZAR, ZMW, ZWL.
+Available currencies are AUD, BGN, BRL, CAD, CHF, CNY, CZK, DKK, EUR, GBP, HKD, HUF, IDR, ILS, INR, ISK, JPY, KRW, MXN, MYR, NOK, NZD, PHP, PLN, RON, SEK, SGD, THB, TRY, USD, and ZAR.
 
 ![](https://raw.githubusercontent.com/Ostrichbeta/steam-easy-currency/main/img/Change3.png)
 
@@ -31,4 +33,4 @@ Feel free to pull requests, and open issues!
 
 ## Special Thanks
 - [jQuery](https://jquery.com/)
-- [Exchangerate.host](https://exchangerate.host/#/)
+- [exchangerate.dev](https://exchangerate.dev/)

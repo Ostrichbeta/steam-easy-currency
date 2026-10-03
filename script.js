@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name              Steam Easy Currency
 // @namespace         https://github.com/Ostrichbeta/steam-easy-currency
-// @version           0.97
+// @version           0.99
 // @description       Show your local currency on the price tag while you are abroad.
 // @author            Ostrichbeta Chan
 // @license           MIT License
@@ -11,7 +11,7 @@
 // @exclude           https://store.steampowered.com/checkout/*
 // @icon              data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @require           https://code.jquery.com/jquery-3.7.1.min.js
-// @connect           api.apilayer.com
+// @connect           api.exchangerate.dev
 // @connect           store.steampowered.com
 // @grant             GM_xmlhttpRequest
 // @grant             GM_getResourceText
@@ -24,6 +24,11 @@
 
 (async function() {
 
+    const EXCHANGE_RATE_API_URL = "https://api.exchangerate.dev/v1";
+    const API_KEY_STORAGE = "sec-exchangerate-api-key";
+    const RATE_CACHE_STORAGE = "sec-exchangerate-json-cache";
+    const CACHE_MAX_AGE_MS = 8 * 60 * 60 * 1000;
+
     function makeGetRequest(url, returnJSON, headers = {}) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
@@ -31,15 +36,25 @@
                 url: url,
                 headers: headers,
                 onload: function(response) {
+                    let responseData = response.responseText;
                     try {
                         if (returnJSON) {
-                            resolve(JSON.parse(response.responseText));
-                        } else {
-                            resolve(response.responseText);
+                            responseData = JSON.parse(response.responseText);
                         }
                     } catch (error) {
                         reject(error);
+                        return;
                     }
+
+                    if (response.status < 200 || response.status >= 300) {
+                        const message = returnJSON && responseData && responseData.message
+                            ? responseData.message
+                            : "Request failed with HTTP status " + response.status + ".";
+                        reject(new Error(message));
+                        return;
+                    }
+
+                    resolve(responseData);
                 },
                 onerror: function(error) {
                     reject(error);
@@ -62,20 +77,103 @@
         return num.toString();
     }
 
-    function bindApiKeyFallback() {
-        $(".sec-options").on("click.sec-options-fallback", function (e) {
-            e.preventDefault();
-            const savedApiKey = GM_getValue("sec-currency-apikey", "");
-            const apiKey = prompt("Currency data could not be loaded. Check or replace your API key from https://currencylayer.com/", savedApiKey);
-            if (apiKey == null) {
+    function getApiHeaders() {
+        const apiKey = GM_getValue(API_KEY_STORAGE, "").trim();
+        return apiKey == "" ? {} : { Authorization: "Bearer " + apiKey };
+    }
+
+    function getPreferredCurrency() {
+        return GM_getValue("sec-currency", "USD").trim().toUpperCase();
+    }
+
+    function isValidCurrencyData(data, sourceCurrency, targetCurrency) {
+        if (!data || data.result !== "success" || data.base !== sourceCurrency || !data.rates) {
+            return false;
+        }
+
+        const rate = Number(data.rates[targetCurrency]);
+        return Number.isFinite(rate) && rate > 0;
+    }
+
+    function getCurrencyError(data) {
+        return data && (data.message || data.code)
+            ? data.message || data.code
+            : "exchangerate.dev returned invalid data.";
+    }
+
+    async function getSupportedCurrencies() {
+        const data = await makeGetRequest(EXCHANGE_RATE_API_URL + "/currencies", true, getApiHeaders());
+        if (!data || data.result !== "success" || !Array.isArray(data.currencies)) {
+            throw new Error(getCurrencyError(data));
+        }
+
+        return data.currencies.map(function(currency) {
+            return currency.code;
+        });
+    }
+
+    async function showOptions(e) {
+        e.preventDefault();
+
+        let settingChanged = false;
+        const savedCurrency = getPreferredCurrency();
+        const currencyInput = prompt("Step 1: Enter new currency: ", savedCurrency);
+        if (currencyInput != null) {
+            const currency = currencyInput.trim().toUpperCase();
+            if (!currency.match(/^[A-Z]{3}$/)) {
+                alert("Invalid currency code. Enter a three-letter code such as EUR.");
                 return;
             }
-            if (apiKey.trim() == "") {
+
+            try {
+                const supportedCurrencies = await getSupportedCurrencies();
+                if (!supportedCurrencies.includes(currency)) {
+                    alert("Invalid currency code. Available input is " + supportedCurrencies.join(", ") + ".");
+                    return;
+                }
+            } catch (error) {
+                console.warn("Steam Easy Currency could not validate the currency list:", error.message || error);
+            }
+
+            if (currency !== savedCurrency) {
+                GM_setValue("sec-currency", currency);
+                settingChanged = true;
+            }
+        }
+
+        const hideOriginalPrice = prompt("Step 2: Hide the original price? Input 1 to hide it or 0 to keep it.", GM_getValue("sec-hide-original", "0"));
+        if (hideOriginalPrice != null) {
+            if (hideOriginalPrice == "0" || hideOriginalPrice == "1") {
+                if (hideOriginalPrice !== GM_getValue("sec-hide-original", "0")) {
+                    GM_setValue("sec-hide-original", hideOriginalPrice);
+                    settingChanged = true;
+                }
+            } else {
                 alert("Invalid input.");
                 return;
             }
-            GM_setValue("sec-currency-apikey", apiKey.trim());
+        }
+
+        const savedApiKey = GM_getValue(API_KEY_STORAGE, "");
+        const apiKey = prompt("Step 3: Optional exchangerate.dev API key. Leave blank to use anonymous access.", savedApiKey);
+        if (apiKey != null && apiKey.trim() !== savedApiKey) {
+            if (apiKey.trim() == "") {
+                GM_deleteValue(API_KEY_STORAGE);
+            } else {
+                GM_setValue(API_KEY_STORAGE, apiKey.trim());
+            }
+            settingChanged = true;
+        }
+
+        if (settingChanged) {
+            GM_deleteValue(RATE_CACHE_STORAGE);
             location.reload();
+        }
+    }
+
+    function bindOptions() {
+        $(".sec-options").off("click.sec-options").on("click.sec-options", function(e) {
+            void showOptions(e);
         });
     }
 
@@ -102,18 +200,18 @@
 
             var currentPrice = parseFloat($(item).text().replaceAll(/\s/g,'').replaceAll(/,/g, '').match(/[\d,]+(?:\.\d+)?/)[0]);
             
-            var preferCurrency = GM_getValue("sec-currency", "USD");
-            let priceTag = currencyJSON["source"];
+            var preferCurrency = getPreferredCurrency();
+            let priceTag = currencyJSON["base"];
             if (preferCurrency == priceTag) {
                 var convertRate = 1;
                 return
             } else {
-                if (!(currencyJSON['quotes']).hasOwnProperty(priceTag + preferCurrency)) {
+                if (!Object.prototype.hasOwnProperty.call(currencyJSON["rates"], preferCurrency)) {
                     alert("Invalid currency mark " + preferCurrency + ".");
                     break;
                 }
                 
-                var convertRate = currencyJSON['quotes'][priceTag + preferCurrency];
+                var convertRate = Number(currencyJSON["rates"][preferCurrency]);
             }
             
             let hideOriginalPrice = GM_getValue("sec-hide-original", "0");
@@ -173,11 +271,18 @@
             if (priceObj.length < 1) {
                 throw new Error("Could not find the price tag!");
             }
-            const priceTag = priceObj.attr("content");
+            const priceTag = priceObj.attr("content").toUpperCase();
+            const targetCurrency = getPreferredCurrency();
             console.log("Your currency in Steam is " + priceTag + ".");
-            if (GM_getValue("sec-currency-apikey") == undefined && GM_getValue("sec-no-key-provided") == undefined) {
-                alert("You haven't set the API key to get currencies. Please visit https://currencylayer.com/ to get one. This alert will not be shown again.");
-                GM_setValue("sec-no-key-provided", true);
+            if (!targetCurrency.match(/^[A-Z]{3}$/)) {
+                throw new Error("Invalid saved target currency " + targetCurrency + ".");
+            }
+            if (priceTag == targetCurrency) {
+                return {
+                    result: "success",
+                    base: priceTag,
+                    rates: { [targetCurrency]: 1 }
+                };
             }
 
             let currencyJSON = {};
@@ -185,11 +290,14 @@
 
             // Check cached data to reduce API call
             try{
-                if (GM_getValue("sec-currency-json-cache") != undefined){
-                    let cachedOBJ = JSON.parse(GM_getValue("sec-currency-json-cache"));
-                    if (Math.floor(new Date().getTime() / 1000) - cachedOBJ['timestamp'] < 28800 && cachedOBJ["source"] == priceTag) {
+                if (GM_getValue(RATE_CACHE_STORAGE) != undefined){
+                    let cachedOBJ = JSON.parse(GM_getValue(RATE_CACHE_STORAGE));
+                    if (Date.now() - cachedOBJ.cachedAt < CACHE_MAX_AGE_MS
+                        && cachedOBJ.source === priceTag
+                        && cachedOBJ.target === targetCurrency
+                        && isValidCurrencyData(cachedOBJ.data, priceTag, targetCurrency)) {
                         // Cache the currency data for 8 hours
-                        currencyJSON = cachedOBJ;
+                        currencyJSON = cachedOBJ.data;
                     } else {
                         refreshCurrency = true;
                     }
@@ -202,110 +310,44 @@
             }
 
             if (refreshCurrency) {
-                currencyJSON = await makeGetRequest("https://api.apilayer.com/currency_data/live?source=" + encodeURIComponent(priceTag), true, {
-                    apikey: GM_getValue("sec-currency-apikey", "")
-                });
-                GM_setValue("sec-currency-json-cache", JSON.stringify(currencyJSON));
+                const requestURL = EXCHANGE_RATE_API_URL + "/latest/" + encodeURIComponent(priceTag)
+                    + "?symbols=" + encodeURIComponent(targetCurrency);
+                currencyJSON = await makeGetRequest(requestURL, true, getApiHeaders());
+                if (!isValidCurrencyData(currencyJSON, priceTag, targetCurrency)) {
+                    throw new Error(getCurrencyError(currencyJSON));
+                }
+                GM_setValue(RATE_CACHE_STORAGE, JSON.stringify({
+                    cachedAt: Date.now(),
+                    source: priceTag,
+                    target: targetCurrency,
+                    data: currencyJSON
+                }));
                 console.log("Currency data refreshed.");
             }
 
-            
-            if (!currencyJSON["success"]) {
-                try {
-                    let error_type = currencyJSON["error"]["type"];
-                    if (error_type == "invalid_access_key") {
-                        alert("Invalid API key provided. Please get a new one from https://currencylayer.com/.");
-                        GM_deleteValue("sec-currency-apikey");
-                        location.reload();
-                    }
-                } catch (error) {
-                    console.error(error);
-                }
+            if (!isValidCurrencyData(currencyJSON, priceTag, targetCurrency)) {
+                throw new Error(getCurrencyError(currencyJSON));
             }
-            
-
-            $(".sec-options").off("click.sec-options-fallback").click(function (e) {
-                e.preventDefault();
-
-                if (GM_getValue("sec-currency-apikey") == undefined || !currencyJSON || !currencyJSON['quotes']) {
-                    const savedApiKey = GM_getValue("sec-currency-apikey", "");
-                    const promptText = savedApiKey == ""
-                        ? "Input your API key, you can get a free one from https://currencylayer.com/"
-                        : "Currency data could not be loaded. Check or replace your API key from https://currencylayer.com/";
-                    let apiKey = prompt(promptText, savedApiKey);
-                    if (apiKey == null) {
-                        return;
-                    } else if (apiKey.trim() == "") {
-                        alert("Invalid input.");
-                        return;
-                    } else {
-                        GM_setValue("sec-currency-apikey", apiKey.trim());
-                        location.reload();
-                    }
-                } else {
-                    let currency = prompt("Step 1: Enter new currency: ", GM_getValue("sec-currency", "USD"));
-                    let settingChanged = false;
-                    let currencyQuotes = Object.keys(currencyJSON['quotes']);
-                    currencyQuotes.forEach((element, index, thisarray) => {
-                        thisarray[index] = element.replace(priceTag, "");
-                    });
-                    currencyQuotes.push(priceTag);
-                    if (currency != null) {
-                        if (!currencyQuotes.includes(currency)) {
-                            alert("Invalid currency tag, avaliable input is " + currencyQuotes.join(", ") + ".");
-                        } else {
-                            GM_setValue("sec-currency", currency);
-                            settingChanged = true;
-                        }
-                    }
-                    let hideOriginalPrice = prompt("Step 2: Hide the original price or not? Input 1 to agree.", GM_getValue("sec-hide-original", "0"));
-                    if (hideOriginalPrice != null) {
-                        switch (hideOriginalPrice) {
-                            case "1":
-                                //hide
-
-                            case "0":
-                                GM_setValue("sec-hide-original", hideOriginalPrice);
-                                settingChanged = true;
-                                //show
-                                break
-                        
-                            default:
-                                alert("Invalid input.");
-                                break;
-                        }
-                    }
-                    let apiKey = prompt("Step 3: Modify your API key if needed, for more details, check https://currencylayer.com/.", GM_getValue("sec-currency-apikey", ""));
-                    if (apiKey == "") {
-                        alert("Invalid input.");
-                    } else if (apiKey != null) {
-                        GM_setValue("sec-currency-apikey", apiKey);
-                        settingChanged = true;
-                    }
-                    if (settingChanged) {
-                        location.reload();
-                    }
-                }
-            });
             
             return currencyJSON;
 
         } catch (error) {
-            console.error("An error occurred while fetching data.", error)
+            console.warn("Steam Easy Currency could not load exchange rates:", error.message || error);
+            return null;
         }
     }
 
-    const sec_options_caption = GM_getValue("sec-currency-apikey") == undefined ? "SET SEC API KEY" : "SEC OPTIONS";
+    const sec_options_caption = "SEC OPTIONS";
 
     $(".sec-options").remove();
     $("#account_dropdown > div.popup_menu").first().append("<a class=\"popup_menu_item sec-options\"  href=\"#\"> " + sec_options_caption + " </a>");
     $("div.minor_menu_items").append("<a class=\"menuitem sec-options\" href=\"#\"> " + sec_options_caption + " </a>");
-    bindApiKeyFallback();
+    bindOptions();
     const currencyJSON = await initData();
-    if (currencyJSON && currencyJSON["source"] && currencyJSON["quotes"] && currencyJSON["source"] != GM_getValue("sec-currency", "USD")) {
+    if (currencyJSON && currencyJSON["base"] && currencyJSON["rates"] && currencyJSON["base"] != getPreferredCurrency()) {
         addCurrencyHint(currencyJSON);
         setInterval(addCurrencyHint, 500, currencyJSON);
-    } else if (currencyJSON && currencyJSON["source"] == GM_getValue("sec-currency", "USD")) {
+    } else if (currencyJSON && currencyJSON["base"] == getPreferredCurrency()) {
         console.log("The currency of your account is the same as the one you wanna display, abort.");
     }
 })();
